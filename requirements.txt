@@ -6,3 +6,4 @@ notebook
 google-cloud-storage
 google-cloud-bigquery
 db-dtypes
+gcp_utils_sds
