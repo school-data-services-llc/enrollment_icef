@@ -241,67 +241,79 @@ def add_total_rows_by_program(df):
     return combined
 
 
-#The budgeted_enrollment table columns are brought in from intent to return. This is generated in google sheets hookups. 
-#Therefore those are the budgeted enrollment numbers that should be used
-def create_budgeted_enrollment(df, client):
+def create_budgeted_enrollment_capacity(client, year="26-27"):
+    """
+    Build budgeted_enrollment_capacity for enrollment_demographics.
 
-    df['grade'] = df['grade'].astype(str)
+    Inputs:
+      - views.student_to_teacher (live PS roster counts by school/grade)
+      - enrollment.budgeted_enrollment (static budget targets for `year`)
 
-    #create unique students by school in order to get the total enrollment by school and grade. 
-    unique_students_by_school_grade = df.groupby(['program_id', 'school', 'grade', 'new_or_returning'])['student_id'].nunique().reset_index()
-    unique_students_by_school_grade = unique_students_by_school_grade.rename(columns={'student_id': 'total_enrollment'})
-
-    unique_students_by_school_grade = unique_students_by_school_grade.pivot_table(
-    index=["program_id", "school", "grade"],
-    columns="new_or_returning",
-    values="total_enrollment",
-    fill_value=0  # Optional: fills NaN with 0
-    ).reset_index()
-
-    unique_students_by_school_grade.columns.name = None
-
-
-    unique_students_by_school_grade['total_enrollment'] = unique_students_by_school_grade['new'] + unique_students_by_school_grade['returning'] 
-
-    query = '''
+    Output columns used by enrollment_demographics:
+      school_name, grade_level, student_count, budgeted_enrollment
+    Plus: seats_remaining, percent_of_seats_filled, year, program_id
+    """
+    students = client.query(
+        f"""
         SELECT
-            *
-        FROM
-        `icef-437920.enrollment.budgeted_enrollment`
-        '''
+            school_name,
+            grade_level,
+            COUNT(*) AS student_count
+        FROM `icef-437920.views.student_to_teacher`
+        WHERE year = '{year}'
+        GROUP BY school_name, grade_level
+        """
+    ).to_dataframe()
 
-    budgeted_enrollment = client.query(query).to_dataframe()
-    budgeted_enrollment["grade"] = budgeted_enrollment["grade"].apply(lambda x: "total" if pd.isna(x) else str(int(x)))
+    budget = client.query(
+        f"""
+        SELECT
+            program_id,
+            school AS school_name,
+            grade AS grade_level,
+            budgeted_enrollment
+        FROM `icef-437920.enrollment.budgeted_enrollment`
+        WHERE year = '{year}'
+          AND grade IS NOT NULL
+        """
+    ).to_dataframe()
 
-    budgeted_enrollment = pd.merge( unique_students_by_school_grade, budgeted_enrollment, on=['program_id', 'grade'], how='left')
-    budgeted_enrollment = budgeted_enrollment.drop(columns=['school_y'])
-    budgeted_enrollment = budgeted_enrollment.rename(columns={'school_x': 'school'})
+    budget["grade_level"] = budget["grade_level"].astype(int)
+    students["grade_level"] = students["grade_level"].astype(int)
 
+    capacity = budget.merge(
+        students,
+        on=["school_name", "grade_level"],
+        how="left",
+    )
+    capacity["student_count"] = capacity["student_count"].fillna(0).astype(int)
+    capacity["budgeted_enrollment"] = capacity["budgeted_enrollment"].astype(int)
+    capacity["seats_remaining"] = (
+        capacity["budgeted_enrollment"] - capacity["student_count"]
+    ).astype(int)
+    capacity["percent_of_seats_filled"] = (
+        capacity["student_count"] / capacity["budgeted_enrollment"].replace(0, pd.NA)
+    ).round(3)
+    capacity["year"] = year
 
-    # budgeted_enrollment = budgeted_enrollment.loc[~budgeted_enrollment['budgeted_enrollment'].isna()].reset_index(drop=True) 
-    budgeted_enrollment['budgeted_enrollment'] = budgeted_enrollment['budgeted_enrollment'].fillna(0)
+    capacity = capacity[
+        [
+            "school_name",
+            "grade_level",
+            "student_count",
+            "budgeted_enrollment",
+            "seats_remaining",
+            "percent_of_seats_filled",
+            "year",
+            "program_id",
+        ]
+    ].sort_values(["school_name", "grade_level"]).reset_index(drop=True)
 
-    budgeted_enrollment = add_total_rows_by_program(budgeted_enrollment)
-
-    budgeted_enrollment['enrollment_capacity'] = (budgeted_enrollment['total_enrollment'] / 
-                                            budgeted_enrollment['budgeted_enrollment']).round(2)
-    
-    budgeted_enrollment['seats_available'] =  budgeted_enrollment['budgeted_enrollment'] - budgeted_enrollment['total_enrollment']
-    budgeted_enrollment['total_enrollment'] = budgeted_enrollment['total_enrollment'].astype(int)
-    budgeted_enrollment['new'] = budgeted_enrollment['new'].astype(int)
-    budgeted_enrollment['returning'] = budgeted_enrollment['returning'].astype(int)
-
-    total_students = budgeted_enrollment.loc[budgeted_enrollment['grade'] == 'total']['new'].sum()
-    logging.info(f'Here is the amount of total students: {total_students}')
-
-    return budgeted_enrollment
-
-
-
-
-    # return(budgeted_enrollment)
-
-
-#CHECK
-# temp = intent_to_return.loc[intent_to_return['School'] == 'View Park High School']
-# temp.groupby(['Grade', 'Student Returning']).count()
+    logging.info(
+        "budgeted_enrollment_capacity %s: %s grade rows, %s students, %s budgeted seats",
+        year,
+        len(capacity),
+        int(capacity["student_count"].sum()),
+        int(capacity["budgeted_enrollment"].sum()),
+    )
+    return capacity
