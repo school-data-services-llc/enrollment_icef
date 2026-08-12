@@ -14,7 +14,9 @@ Built by this pipeline for **`views.enrollment_demographics`**.
 
 **Output columns for demographics:** `school_name`, `grade_level`, `student_count`, `budgeted_enrollment` (plus `seats_remaining`, `percent_of_seats_filled`, `year`, `program_id`).
 
-This job writes GCS only (`budgeted_enrollment_capacity.csv`); the morning bucket→BQ refresh loads the table.
+This job dual-writes: GCS (`budgeted_enrollment_capacity.csv`, with audit) and truncates
+`enrollment.budgeted_enrollment_capacity` so hourly runs refresh demographics without waiting
+for the morning bucket→BQ job.
 
 Active year is set in `main.py` (`YEAR = "26-27"`).
 
